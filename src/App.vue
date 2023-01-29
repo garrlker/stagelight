@@ -1,22 +1,24 @@
 <script setup>
-import { computed, ref, watch } from "vue";
+import { ref, provide } from "vue";
 import * as reglFunction from "regl";
-import webgl2 from "./webgl2-compat.js";
+import webgl2 from "./js/regl-webgl2-shim.js";
 import simple from "./shaders/simple.glsl";
 import soundEclipse from "./shaders/soundEclipse.glsl";
 import synthwaves from "./shaders/synthwaves.glsl";
 import waves from "./shaders/waves.glsl";
-import createMap from "./js/configureMap.js";
+import rainbowdonut from "./shaders/rainbowdonut.glsl";
+
+import createReglToShadertoyMap from "./js/configureMap.js";
 import createDraw from "./js/drawImage.js";
 import { analyser } from "regl-audio";
-import { useDevicesList, useUserMedia } from "@vueuse/core";
 import processGlslTemplate from "./js/processGlslTemplate.js";
+import AudioController from "./components/AudioController.vue";
 
 let startRendering = false;
-const vizcontainer = ref(null);
+const glCanvas = ref(null);
 const regl = webgl2.overrideContextType(() =>
   reglFunction({
-    container: vizcontainer.value,
+    container: glCanvas.value,
     extensions: [
       "WEBGL_draw_buffers",
       "OES_texture_float",
@@ -27,70 +29,26 @@ const regl = webgl2.overrideContextType(() =>
   })
 );
 
-const { audioInputs: microphones } = useDevicesList({
-  requestPermissions: true,
-});
+provide("regl", regl);
+let spectogramAnalysisTexture = (fn) => fn();
 
-console.log(microphones.value);
+function handleAudioContext(payload) {
+  const { audioAnalyser } = payload;
+  spectogramAnalysisTexture = analyser({ regl, analyser: audioAnalyser });
+  startRendering = true;
+}
 
-const currentMicrophone = computed(() => microphones.value[0]?.deviceId);
+const processedTemplate = processGlslTemplate(waves);
 
-const { stream, start } = useUserMedia({
-  audioDeviceId: currentMicrophone,
-});
-
-start();
-
-const audioCtx = new AudioContext({
-  latencyHint: 0,
-});
-audioCtx.fftSize = 16;
-
-let audioAnalyzer = audioCtx.createAnalyser();
-let audioCmd = (fnc) => fnc();
-
-watch(stream, () => {
-  console.log("hi", stream.value);
-  if (stream.value) {
-    console.log("Stream ", stream.value);
-    audioCtx.createMediaStreamSource(stream.value).connect(audioAnalyzer);
-    console.log(audioAnalyzer);
-    console.log("ctx", audioCtx);
-    analyser.minDecibels = -90;
-    analyser.maxDecibels = -10;
-    analyser.smoothingTimeConstant = 0.85;
-    analyser.fftSize = 16;
-    console.log("analyser", audioAnalyzer);
-    audioCmd = analyser({ regl, analyser: audioAnalyzer });
-    // console.log("cmd", audioCmd)
-
-    // const audio = new Audio();
-    // audio.autoplay = true;
-    // audio.srcObject = stream.value;
-    startRendering = true;
-  }
-});
-
-console.log(stream.value);
-
-// const distortion = audioCtx.createWaveShaper();
-// const gainNode = audioCtx.createGain();
-// const biquadFilter = audioCtx.createBiquadFilter();
-// const convolver = audioCtx.createConvolver();
-
-// const echoDelay = createEchoDelayEffect(audioCtx);
-
-const processedTemplate = processGlslTemplate(soundEclipse);
-
-const drawImage = createDraw(regl, processedTemplate, ``);
-const configureMap = createMap(regl);
+const drawAudioShader = createDraw(regl, processedTemplate, ``);
+const shaderToyEnvironmentShim = createReglToShadertoyMap(regl);
 
 {
   regl.frame(() => {
     if (startRendering) {
-      audioCmd(() => {
-        configureMap(() => {
-          drawImage();
+      spectogramAnalysisTexture(() => {
+        shaderToyEnvironmentShim(() => {
+          drawAudioShader();
         });
       });
     }
@@ -99,7 +57,10 @@ const configureMap = createMap(regl);
 </script>
 
 <template>
-  <div class="viz" ref="vizcontainer"></div>
+  <div class="viz" ref="glCanvas"></div>
+  <div class="overlay">
+    <AudioController @playAudio="handleAudioContext"></AudioController>
+  </div>
 </template>
 
 <style>
@@ -113,5 +74,13 @@ body,
 .viz {
   width: 100%;
   height: 100%;
+}
+.overlay {
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  position: fixed;
+  top: 0px;
+  left: 0px;
 }
 </style>
